@@ -66,19 +66,33 @@ bind dx f = do
   return $ t2 {variables = variables t1 ++ variables t2, density = density t1 * density t2}
 
 -- | A single Metropolis-corrected transition of single-site Trace MCMC.
-mhTrans :: MonadSample m => Weighted (FreeSampler m) a -> Trace a -> m (Trace a)
-mhTrans m t@Trace {variables = us, density = p} = do
+mhTransProposal :: MonadSample m => ([Double] -> m [Double]) -> Weighted (FreeSampler m) a -> Trace a -> m (Trace a)
+mhTransProposal propose m t@Trace {variables = us, density = p} = do
   let n = length us
-  us' <- do
+  us' <- propose us
+  ((b, q), vs) <- runWriterT $ runWeighted $ Weighted.hoist (WriterT . withPartialRandomness us') m
+  let ratio = (exp . ln) $ min 1 (q * fromIntegral n / (p * fromIntegral (length vs))) -- model comparison
+  accept <- bernoulli ratio
+  return $ if accept then Trace vs b q else t
+
+linearRange :: Double -> Double
+BoolRange :: Double -> Bool
+-- | p(x_i,y_i)
+-- | x_{i+1} ~ p(.|y_i)
+-- | y_{i+1} ~ p(.|x_{i+1})
+-- | [x_0, y_0] -> m [x_1, y_1]
+gibbsLinear :: [Double] -> m [Double]
+gibbsLinear us = do
+    let n = length us
     i <- discrete $ discreteUniformAB 0 (n -1)
-    u' <- random
+    u' <- random 
     case splitAt i us of
       (xs, _ : ys) -> return $ xs ++ (u' : ys)
       _ -> error "impossible"
-  ((b, q), vs) <- runWriterT $ runWeighted $ Weighted.hoist (WriterT . withPartialRandomness us') m
-  let ratio = (exp . ln) $ min 1 (q * fromIntegral n / (p * fromIntegral (length vs)))
-  accept <- bernoulli ratio
-  return $ if accept then Trace vs b q else t
+
+-- | A single Metropolis-corrected transition of single-site Trace MCMC.
+mhTrans :: MonadSample m => Weighted (FreeSampler m) a -> Trace a -> m (Trace a)
+mhTrans = mhTransProposal gibbs
 
 -- | A variant of 'mhTrans' with an external sampling monad.
 mhTrans' :: MonadSample m => Weighted (FreeSampler Identity) a -> Trace a -> m (Trace a)
